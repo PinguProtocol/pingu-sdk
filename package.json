@@ -1,0 +1,52 @@
+{
+  "name": "@pingu-exchange/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for trading on Pingu Exchange (Monad)",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "ethers": "^5.7.2",
+    "@pythnetwork/pyth-evm-js": "^1.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "dotenv": "^16.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PinguProtocol/pingu-agent-sdk"
+  },
+  "keywords": [
+    "pingu",
+    "exchange",
+    "perpetuals",
+    "defi",
+    "monad",
+    "trading",
+    "sdk"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
