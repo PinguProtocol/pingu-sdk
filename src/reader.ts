@@ -38,18 +38,17 @@ export class PinguReader {
 
   async getMarkets(): Promise<MarketInfo[]> {
     try {
-      const marketStore = await this.client.getContract("MarketStore");
-      const marketList = (await this.client.withFallback(() =>
-        marketStore.getMarketList(),
-      )) as string[];
-      const rawInfos = (await this.client.withFallback(() =>
-        marketStore.getMany(marketList),
-      )) as RawMarketInfo[];
+      const result = await this.client.withFallback(async () => {
+        const marketStore = await this.client.getContract("MarketStore");
+        const marketList = (await marketStore.getMarketList()) as string[];
+        const rawInfos = (await marketStore.getMany(marketList)) as RawMarketInfo[];
+        return { marketList, rawInfos };
+      });
 
-      return marketList.map((market, i) =>
+      return result.marketList.map((market: string, i: number) =>
         formatMarketInfo({
           market,
-          ...rawInfos[i],
+          ...result.rawInfos[i],
         }),
       );
     } catch (error) {
@@ -59,10 +58,10 @@ export class PinguReader {
 
   async getMarketInfo(market: string): Promise<MarketInfo> {
     try {
-      const marketStore = await this.client.getContract("MarketStore");
-      const rawInfo = (await this.client.withFallback(() =>
-        marketStore.get(market),
-      )) as RawMarketInfo;
+      const rawInfo = await this.client.withFallback(async () => {
+        const marketStore = await this.client.getContract("MarketStore");
+        return marketStore.get(market) as Promise<RawMarketInfo>;
+      });
       return formatMarketInfo({ market, ...rawInfo });
     } catch (error) {
       throw new Error(`Failed to get market info: ${parseContractError(error)}`);
@@ -71,30 +70,27 @@ export class PinguReader {
 
   /**
    * Get open interest for a market.
-   * Optimized: only fetches OI long and OI short, computes total client-side.
+   * Returns raw BigNumber values in the asset's native decimals.
    */
   async getOpenInterest(market: string, asset = "USDC"): Promise<OIData> {
     try {
-      const positionStore = await this.client.getContract("PositionStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
-      const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
-      const [oiLong, oiShort] = (await Promise.all([
-        this.client.withFallback(() =>
-          positionStore.getOILong(assetAddress, market),
-        ),
-        this.client.withFallback(() =>
-          positionStore.getOIShort(assetAddress, market),
-        ),
-      ])) as [ethers.BigNumber, ethers.BigNumber];
-
-      const longNum = Number(formatUnits(oiLong, assetDecimals));
-      const shortNum = Number(formatUnits(oiShort, assetDecimals));
+      const [oiLong, oiShort] = await Promise.all([
+        this.client.withFallback(async () => {
+          const ps = await this.client.getContract("PositionStore");
+          return ps.getOILong(assetAddress, market) as Promise<ethers.BigNumber>;
+        }),
+        this.client.withFallback(async () => {
+          const ps = await this.client.getContract("PositionStore");
+          return ps.getOIShort(assetAddress, market) as Promise<ethers.BigNumber>;
+        }),
+      ]);
 
       return {
-        total: longNum + shortNum,
-        long: longNum,
-        short: shortNum,
+        total: oiLong.add(oiShort),
+        long: oiLong,
+        short: oiShort,
       };
     } catch (error) {
       throw new Error(
@@ -109,12 +105,12 @@ export class PinguReader {
    */
   async getFundingRate(market: string, asset = "USDC"): Promise<number> {
     try {
-      const fundingStore = await this.client.getContract("FundingStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      const result = (await this.client.withFallback(() =>
-        fundingStore.getLastCappedEmaFundingRate(assetAddress, market),
-      )) as ethers.BigNumber;
+      const result = await this.client.withFallback(async () => {
+        const fundingStore = await this.client.getContract("FundingStore");
+        return fundingStore.getLastCappedEmaFundingRate(assetAddress, market) as Promise<ethers.BigNumber>;
+      });
       const formattedResult = formatUnits(result);
       return (Number(formattedResult) / BPS_DIVIDER / (365 * 3)) * 100;
     } catch (error) {
@@ -133,12 +129,12 @@ export class PinguReader {
     asset = "USDC",
   ): Promise<ethers.BigNumber> {
     try {
-      const funding = await this.client.getContract("Funding");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      return (await this.client.withFallback(() =>
-        funding.getRealTimeFundingTracker(assetAddress, market),
-      )) as ethers.BigNumber;
+      return await this.client.withFallback(async () => {
+        const funding = await this.client.getContract("Funding");
+        return funding.getRealTimeFundingTracker(assetAddress, market) as Promise<ethers.BigNumber>;
+      });
     } catch (error) {
       throw new Error(
         `Failed to get real-time funding tracker: ${parseContractError(error)}`,
@@ -148,19 +144,6 @@ export class PinguReader {
 
   /**
    * Get accrued funding for a market using the V2 EMA-based calculation.
-   *
-   * Calls `Funding.getAccruedFundingV2` on-chain and returns the first value
-   * (fundingIncrement), which is the V2 equivalent of V1's `getAccruedFunding`.
-   * It represents the total funding tracker increment over the elapsed intervals,
-   * computed using the exponential moving average (EMA) method.
-   *
-   * - Positive value = longs pay shorts (funding tracker increases).
-   * - Negative value = shorts pay longs (funding tracker decreases).
-   * - Value is in UNIT × bps scale.
-   *
-   * @param market - Market identifier (e.g. "ETH-USD")
-   * @param asset - Asset name (default "USDC")
-   * @param intervals - Number of intervals to compute over (default 0 = auto-calculate from last update)
    */
   async getAccruedFunding(
     market: string,
@@ -168,12 +151,14 @@ export class PinguReader {
     intervals = 0,
   ): Promise<ethers.BigNumber> {
     try {
-      const funding = await this.client.getContract("Funding");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      const result = (await this.client.withFallback(() =>
-        funding.getAccruedFundingV2(assetAddress, market, intervals),
-      )) as [ethers.BigNumber, ethers.BigNumber, ethers.BigNumber, ethers.BigNumber];
+      const result = await this.client.withFallback(async () => {
+        const funding = await this.client.getContract("Funding");
+        return funding.getAccruedFundingV2(assetAddress, market, intervals) as Promise<
+          [ethers.BigNumber, ethers.BigNumber, ethers.BigNumber, ethers.BigNumber]
+        >;
+      });
 
       // First return value = accrued funding increment (V2 equivalent of V1)
       return result[0];
@@ -192,12 +177,12 @@ export class PinguReader {
     asset = "USDC",
   ): Promise<number> {
     try {
-      const fundingStore = await this.client.getContract("FundingStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      const timestamp = (await this.client.withFallback(() =>
-        fundingStore.getLastUpdated(assetAddress, market),
-      )) as ethers.BigNumber;
+      const timestamp = await this.client.withFallback(async () => {
+        const fundingStore = await this.client.getContract("FundingStore");
+        return fundingStore.getLastUpdated(assetAddress, market) as Promise<ethers.BigNumber>;
+      });
       return Number(timestamp);
     } catch (error) {
       throw new Error(
@@ -208,13 +193,13 @@ export class PinguReader {
 
   async getPoolBalance(asset = "USDC"): Promise<number> {
     try {
-      const poolStore = await this.client.getContract("PoolStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
       const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
-      const balance = (await this.client.withFallback(() =>
-        poolStore.getBalance(assetAddress),
-      )) as ethers.BigNumber;
+      const balance = await this.client.withFallback(async () => {
+        const poolStore = await this.client.getContract("PoolStore");
+        return poolStore.getBalance(assetAddress) as Promise<ethers.BigNumber>;
+      });
       return Number(formatUnits(balance, assetDecimals));
     } catch (error) {
       throw new Error(
@@ -225,13 +210,13 @@ export class PinguReader {
 
   async getMaxPositionSize(market: string, asset = "USDC"): Promise<number> {
     try {
-      const riskStore = await this.client.getContract("RiskStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
       const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
-      const maxSize = (await this.client.withFallback(() =>
-        riskStore.getMaxPositionSize(market, assetAddress),
-      )) as ethers.BigNumber;
+      const maxSize = await this.client.withFallback(async () => {
+        const riskStore = await this.client.getContract("RiskStore");
+        return riskStore.getMaxPositionSize(market, assetAddress) as Promise<ethers.BigNumber>;
+      });
       return Number(formatUnits(maxSize, assetDecimals));
     } catch (error) {
       throw new Error(
@@ -242,13 +227,13 @@ export class PinguReader {
 
   async getMaxOI(market: string, asset = "USDC"): Promise<number> {
     try {
-      const riskStore = await this.client.getContract("RiskStore");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
       const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
-      const maxOI = (await this.client.withFallback(() =>
-        riskStore.getMaxOI(market, assetAddress),
-      )) as ethers.BigNumber;
+      const maxOI = await this.client.withFallback(async () => {
+        const riskStore = await this.client.getContract("RiskStore");
+        return riskStore.getMaxOI(market, assetAddress) as Promise<ethers.BigNumber>;
+      });
       return Number(formatUnits(maxOI, assetDecimals));
     } catch (error) {
       throw new Error(`Failed to get max OI: ${parseContractError(error)}`);
@@ -257,22 +242,15 @@ export class PinguReader {
 
   /**
    * Get global unrealized profit/loss for a given asset.
-   *
-   * This value is set by a whitelisted keeper and represents the total
-   * unrealized P&L of all open positions for this asset. It is used
-   * internally by the Pool contract to calculate deposit/withdrawal taxes.
-   *
-   * @param asset - Asset name (default "USDC")
-   * @returns Global UPL as a signed BigNumber (positive = net unrealized profit)
    */
   async getGlobalUPL(asset = "USDC"): Promise<ethers.BigNumber> {
     try {
-      const pool = await this.client.getContract("Pool");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      return (await this.client.withFallback(() =>
-        pool.getGlobalUPL(assetAddress),
-      )) as ethers.BigNumber;
+      return await this.client.withFallback(async () => {
+        const pool = await this.client.getContract("Pool");
+        return pool.getGlobalUPL(assetAddress) as Promise<ethers.BigNumber>;
+      });
     } catch (error) {
       throw new Error(
         `Failed to get global UPL: ${parseContractError(error)}`,
@@ -282,20 +260,6 @@ export class PinguReader {
 
   /**
    * Compute profit & loss for a position on-chain via Positions.getPnL.
-   *
-   * This calls the contract's `getPnL` view function which computes:
-   * - Price PnL based on entry price vs current price
-   * - Funding fee based on funding tracker differential
-   * - Net PnL = price PnL − funding fee (for longs) or + funding fee (for shorts)
-   *
-   * @param market - Market identifier (e.g. "ETH-USD")
-   * @param isLong - Whether the position is long
-   * @param currentPrice - Current market price (18 decimals BigNumber)
-   * @param positionPrice - Position average entry price (18 decimals BigNumber)
-   * @param size - Position size in asset decimals (BigNumber)
-   * @param fundingTracker - Position's funding tracker snapshot (BigNumber)
-   * @param asset - Asset name (default "USDC")
-   * @returns Object with `pnl` (net P&L in asset decimals) and `fundingFee`
    */
   async getPnL(
     market: string,
@@ -307,11 +271,11 @@ export class PinguReader {
     asset = "USDC",
   ): Promise<{ pnl: ethers.BigNumber; fundingFee: ethers.BigNumber }> {
     try {
-      const positions = await this.client.getContract("Positions");
       const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
-      const result = (await this.client.withFallback(() =>
-        positions.getPnL(
+      const result = await this.client.withFallback(async () => {
+        const positions = await this.client.getContract("Positions");
+        return positions.getPnL(
           assetAddress,
           market,
           isLong,
@@ -319,8 +283,8 @@ export class PinguReader {
           positionPrice,
           size,
           fundingTracker,
-        ),
-      )) as [ethers.BigNumber, ethers.BigNumber];
+        ) as Promise<[ethers.BigNumber, ethers.BigNumber]>;
+      });
 
       return {
         pnl: result[0],

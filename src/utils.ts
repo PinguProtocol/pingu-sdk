@@ -15,12 +15,17 @@ export function formatUnits(
 }
 
 /**
- * Parse string/number to BigNumber
+ * Parse string/number/BigNumber to BigNumber.
+ * If amount is already a BigNumber, it is returned as-is (assumed already in
+ * the correct raw-unit representation).
  */
 export function parseUnits(
-  amount: string | number,
+  amount: string | number | ethers.BigNumber,
   decimals = 18,
 ): ethers.BigNumber {
+  // Already a BigNumber → return as-is
+  if (ethers.BigNumber.isBigNumber(amount)) return amount;
+
   if (!amount || (typeof amount === "number" && isNaN(amount))) amount = "0";
   if (typeof amount === "number") {
     // Avoid scientific notation by using toFixed
@@ -217,6 +222,36 @@ export function parseContractError(error: unknown): string {
   }
 
   return raw;
+}
+
+/**
+ * Detect whether an error is a known EVM revert (with a reason string).
+ * These are legitimate contract errors, not RPC infrastructure failures.
+ */
+export function isKnownEvmRevert(error: unknown): boolean {
+  const err = error as Record<string, unknown>;
+  const code = err?.code as string | undefined;
+  const reason =
+    (err?.error as Record<string, unknown>)?.reason as string ||
+    (err?.reason as string) ||
+    (err?.message as string) ||
+    "";
+
+  // ethers CALL_EXCEPTION = contract call reverted with data
+  if (code === "CALL_EXCEPTION") return true;
+
+  // Explicit "execution reverted" with a reason string
+  if (/execution reverted:\s*!/.test(reason)) return true;
+
+  // UNPREDICTABLE_GAS_LIMIT when estimateGas encounters a revert
+  if (code === "UNPREDICTABLE_GAS_LIMIT" && /revert/i.test(reason)) return true;
+
+  // Any known "!xxx" revert code in the message
+  for (const revertCode of Object.keys(REVERT_MESSAGES)) {
+    if (reason.includes(revertCode)) return true;
+  }
+
+  return false;
 }
 
 export function getAssetAddress(

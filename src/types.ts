@@ -5,11 +5,11 @@ export interface Position {
   asset: string;
   market: string;
   isLong: boolean;
-  size: number;
-  margin: number;
+  size: ethers.BigNumber;
+  margin: ethers.BigNumber;
   fundingTracker: ethers.BigNumber;
   price: number;
-  timestamp: number;
+  timestamp: ethers.BigNumber;
   leverage: number;
 }
 
@@ -18,15 +18,15 @@ export interface Order {
   user: string;
   asset: string;
   market: string;
-  margin: number;
-  size: number;
+  margin: ethers.BigNumber;
+  size: ethers.BigNumber;
   price: number;
-  fee: number;
+  fee: ethers.BigNumber;
   isLong: boolean;
   orderType: number;
   isReduceOnly: boolean;
-  timestamp: number;
-  expiry: number;
+  timestamp: ethers.BigNumber;
+  expiry: ethers.BigNumber;
   cancelOrderId: number;
   leverage: number;
 }
@@ -51,9 +51,9 @@ export interface MarketInfo {
 }
 
 export interface OIData {
-  total: number;
-  long: number;
-  short: number;
+  total: ethers.BigNumber;
+  long: ethers.BigNumber;
+  short: ethers.BigNumber;
 }
 
 export interface PoolBalance {
@@ -68,23 +68,23 @@ export interface TradeHistory {
   user: string;
   asset: string;
   market: string;
-  margin: number;
-  size: number;
+  margin: ethers.BigNumber;
+  size: ethers.BigNumber;
   price: number;
-  fee: number;
+  fee: ethers.BigNumber;
   isLong: boolean;
-  pnl?: number;
+  pnl?: ethers.BigNumber;
   orderId: string;
   blockNumber: number;
-  timestamp: number;
+  timestamp: ethers.BigNumber;
   transactionHash: string;
   leverage: number;
 }
 
 export interface UserStats {
   totalTrades: number;
-  totalVolume: number;
-  totalPnl: number;
+  totalVolume: ethers.BigNumber;
+  totalPnl: ethers.BigNumber;
   winCount: number;
   lossCount: number;
   winRate: number;
@@ -93,22 +93,22 @@ export interface UserStats {
 export interface SubmitOrderParams {
   market: string;
   isLong: boolean;
-  margin: number;
+  margin: number | ethers.BigNumber;
   leverage: number;
   asset?: string;
-  tpPrice?: number;
-  slPrice?: number;
+  tpPrice?: number | ethers.BigNumber;
+  slPrice?: number | ethers.BigNumber;
 }
 
 export interface SubmitLimitOrderParams extends SubmitOrderParams {
-  price: number;
+  price: number | ethers.BigNumber;
 }
 
 export interface ClosePositionParams {
   market: string;
   isLong: boolean;
   asset?: string;
-  size?: number;
+  size?: number | ethers.BigNumber;
 }
 
 export interface OrderTuple {

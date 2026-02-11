@@ -27,7 +27,7 @@ export class PinguPool {
   }
 
   async deposit(
-    amount: number,
+    amount: number | ethers.BigNumber,
     asset = "USDC",
     lockupIndex = 0,
   ): Promise<ethers.providers.TransactionReceipt> {
@@ -35,68 +35,70 @@ export class PinguPool {
 
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const _amount = parseUnits(amount.toString(), assetDecimals);
+    const _amount = parseUnits(amount, assetDecimals);
 
     const value = isGasToken(asset, this.client.config.assets)
       ? _amount
       : ethers.BigNumber.from(0);
 
     try {
-      const pool = await this.client.getContract("Pool", true);
-      const gas = await pool.estimateGas.deposit(
-        assetAddress,
-        _amount,
-        lockupIndex,
-        { value },
-      );
-      const tx = await pool.deposit(assetAddress, _amount, lockupIndex, {
-        gasLimit: addGasBuffer(gas),
-        value,
+      return await this.client.withFallback(async () => {
+        const pool = await this.client.getContract("Pool", true);
+        const gas = await pool.estimateGas.deposit(
+          assetAddress,
+          _amount,
+          lockupIndex,
+          { value },
+        );
+        const tx = await pool.deposit(assetAddress, _amount, lockupIndex, {
+          gasLimit: addGasBuffer(gas),
+          value,
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to deposit: ${parseContractError(error)}`);
     }
   }
 
   async withdraw(
-    amount: number,
+    amount: number | ethers.BigNumber,
     asset = "USDC",
   ): Promise<ethers.providers.TransactionReceipt> {
     this.requireSigner();
 
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const _amount = parseUnits(amount.toString(), assetDecimals);
+    const _amount = parseUnits(amount, assetDecimals);
 
     try {
-      const pool = await this.client.getContract("Pool", true);
-      const gas = await pool.estimateGas.withdraw(assetAddress, _amount);
-      const tx = await pool.withdraw(assetAddress, _amount, {
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const pool = await this.client.getContract("Pool", true);
+        const gas = await pool.estimateGas.withdraw(assetAddress, _amount);
+        const tx = await pool.withdraw(assetAddress, _amount, {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to withdraw: ${parseContractError(error)}`);
     }
   }
 
   async getDepositTax(
-    amount: number,
+    amount: number | ethers.BigNumber,
     asset = "USDC",
     lockupIndex = 0,
   ): Promise<number> {
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const _amount = parseUnits(amount.toString(), assetDecimals);
+    const _amount = parseUnits(amount, assetDecimals);
 
     try {
-      const pool = await this.client.getContract("Pool");
-      const taxBps: ethers.BigNumber = await this.client.withFallback(() =>
-        pool.getDepositTaxBps(assetAddress, _amount, lockupIndex),
-      );
+      const taxBps = await this.client.withFallback(async () => {
+        const pool = await this.client.getContract("Pool");
+        return pool.getDepositTaxBps(assetAddress, _amount, lockupIndex) as Promise<ethers.BigNumber>;
+      });
 
       return Math.round(Number(taxBps.toString())) / 100;
     } catch (error) {
@@ -104,16 +106,19 @@ export class PinguPool {
     }
   }
 
-  async getWithdrawalTax(amount: number, asset = "USDC"): Promise<number> {
+  async getWithdrawalTax(
+    amount: number | ethers.BigNumber,
+    asset = "USDC",
+  ): Promise<number> {
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const _amount = parseUnits(amount.toString(), assetDecimals);
+    const _amount = parseUnits(amount, assetDecimals);
 
     try {
-      const pool = await this.client.getContract("Pool");
-      const taxBps: ethers.BigNumber = await this.client.withFallback(() =>
-        pool.getWithdrawalTaxBps(assetAddress, _amount),
-      );
+      const taxBps = await this.client.withFallback(async () => {
+        const pool = await this.client.getContract("Pool");
+        return pool.getWithdrawalTaxBps(assetAddress, _amount) as Promise<ethers.BigNumber>;
+      });
 
       return Math.round(Number(taxBps.toString())) / 100;
     } catch (error) {
@@ -132,28 +137,26 @@ export class PinguPool {
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
     try {
-      const poolStore = await this.client.getContract("PoolStore");
-
-      const [unlockedClp, lockedClp, totalClp, poolBalance, clpSupply] =
-        (await Promise.all([
-          this.client.withFallback(() =>
+      const data = await this.client.withFallback(async () => {
+        const poolStore = await this.client.getContract("PoolStore");
+        const [unlockedClp, lockedClp, totalClp, poolBalance, clpSupply] =
+          (await Promise.all([
             poolStore.getUnlockedClpBalance(assetAddress, userAddress),
-          ),
-          this.client.withFallback(() =>
             poolStore.getLockedClpBalance(assetAddress, userAddress),
-          ),
-          this.client.withFallback(() =>
             poolStore.getUserClpBalance(assetAddress, userAddress),
-          ),
-          this.client.withFallback(() => poolStore.getBalance(assetAddress)),
-          this.client.withFallback(() => poolStore.getClpSupply(assetAddress)),
-        ])) as [
-          ethers.BigNumber,
-          ethers.BigNumber,
-          ethers.BigNumber,
-          ethers.BigNumber,
-          ethers.BigNumber,
-        ];
+            poolStore.getBalance(assetAddress),
+            poolStore.getClpSupply(assetAddress),
+          ])) as [
+            ethers.BigNumber,
+            ethers.BigNumber,
+            ethers.BigNumber,
+            ethers.BigNumber,
+            ethers.BigNumber,
+          ];
+        return { unlockedClp, lockedClp, totalClp, poolBalance, clpSupply };
+      });
+
+      const { unlockedClp, lockedClp, totalClp, poolBalance, clpSupply } = data;
 
       if (clpSupply.isZero() || poolBalance.isZero()) {
         return { withdrawable: 0, locked: 0, total: 0 };
@@ -177,11 +180,6 @@ export class PinguPool {
 
   /**
    * Approve asset spending for the FundStore contract (used by Pool).
-   * FundStore is the contract that performs `transferFrom` for pool deposits.
-   * This approval also covers trading operations (Orders, Positions).
-   *
-   * @param asset - Asset name (default "USDC")
-   * @param amount - Amount to approve (default: MaxUint256 for unlimited)
    */
   async approveAsset(
     asset = "USDC",
@@ -196,19 +194,21 @@ export class PinguPool {
     }
 
     try {
-      const fundStoreAddress =
-        await this.client.getContractAddress("FundStore");
-      const erc20 = this.client.getErc20Contract(assetAddress, true);
+      return await this.client.withFallback(async () => {
+        const fundStoreAddress =
+          await this.client.getContractAddress("FundStore");
+        const erc20 = this.client.getErc20Contract(assetAddress, true);
 
-      const approveAmount = amount || ethers.constants.MaxUint256;
-      const gas = await erc20.estimateGas.approve(
-        fundStoreAddress,
-        approveAmount,
-      );
-      const tx = await erc20.approve(fundStoreAddress, approveAmount, {
-        gasLimit: addGasBuffer(gas),
+        const approveAmount = amount || ethers.constants.MaxUint256;
+        const gas = await erc20.estimateGas.approve(
+          fundStoreAddress,
+          approveAmount,
+        );
+        const tx = await erc20.approve(fundStoreAddress, approveAmount, {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to approve asset: ${parseContractError(error)}`);
     }

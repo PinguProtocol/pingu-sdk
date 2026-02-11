@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from "./config";
 import type { ChainConfig } from "./config";
 import { DATA_STORE_ABI, ERC20_ABI } from "./abis";
 import * as ABIS from "./abis";
+import { isKnownEvmRevert } from "./utils";
 
 export interface PinguClientConfig {
   rpcUrl?: string;
@@ -58,14 +59,12 @@ export class PinguClient {
   }
 
   /**
-   * Switch to next available RPC endpoint
+   * Switch to next available RPC endpoint.
+   * Recreates provider, reconnects signer and dataStore.
    */
-  private switchRpc(): boolean {
-    this.currentRpcIndex++;
-    if (this.currentRpcIndex >= this.rpcUrls.length) {
-      this.currentRpcIndex = 0;
-      return false; // Cycled through all RPCs
-    }
+  private switchToNextRpc(): void {
+    this.currentRpcIndex =
+      (this.currentRpcIndex + 1) % this.rpcUrls.length;
 
     const newRpcUrl = this.rpcUrls[this.currentRpcIndex];
     this.provider = new ethers.providers.JsonRpcProvider(newRpcUrl);
@@ -83,31 +82,43 @@ export class PinguClient {
       DATA_STORE_ABI,
       this.provider,
     );
-
-    return true;
   }
 
   /**
-   * Execute an RPC call with automatic fallback
+   * Execute an RPC call with automatic fallback across all configured RPCs.
+   *
+   * - If the error is a known EVM revert (with a reason string like "!margin"),
+   *   it is thrown immediately — switching RPC would not help.
+   * - For all other errors (network, timeout, unknown), the next RPC is tried.
+   * - All RPCs are attempted before giving up.
+   *
+   * IMPORTANT: The callback `fn` should create fresh contract references
+   * (via `getContract`) so that retries use the new provider after a switch.
    */
   async withFallback<T>(fn: () => Promise<T>): Promise<T> {
     let lastError: Error | undefined;
-    const startIndex = this.currentRpcIndex;
+    const totalRpcs = this.rpcUrls.length;
 
-    do {
+    for (let attempt = 0; attempt < totalRpcs; attempt++) {
       try {
         return await fn();
       } catch (error) {
+        // Known EVM revert → throw immediately, no point switching RPCs
+        if (isKnownEvmRevert(error)) {
+          throw error;
+        }
+
         lastError = error as Error;
-        const switched = this.switchRpc();
-        if (!switched && this.currentRpcIndex === startIndex) {
-          break; // Tried all RPCs
+
+        // Try next RPC if there are more to try
+        if (attempt < totalRpcs - 1) {
+          this.switchToNextRpc();
         }
       }
-    } while (true);
+    }
 
     throw new Error(
-      `All RPC endpoints failed. Last error: ${lastError?.message}`,
+      `All ${totalRpcs} RPC endpoints failed. Last error: ${lastError?.message}`,
     );
   }
 
@@ -115,9 +126,10 @@ export class PinguClient {
     const cached = this.addressCache.get(name);
     if (cached) return cached;
 
-    const address: string = await this.withFallback(() =>
-      this.dataStore.getAddress(name),
-    );
+    const address: string = await this.withFallback(async () => {
+      // Use current dataStore (updated after RPC switch)
+      return this.dataStore.getAddress(name);
+    });
     this.addressCache.set(name, address);
     return address;
   }

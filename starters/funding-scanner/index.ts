@@ -11,7 +11,9 @@ interface FundingSnapshot {
   category: string;
 }
 
-const client = new PinguClient();
+const client = new PinguClient(
+  process.env.RPC_URL ? { rpcUrl: process.env.RPC_URL } : {},
+);
 const reader = new PinguReader(client);
 
 async function scanFundingRates(): Promise<FundingSnapshot[]> {

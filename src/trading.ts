@@ -142,13 +142,16 @@ export class PinguTrader {
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
     // Fetch market maxLeverage to cap size and prevent revert
-    const marketStore = await this.client.getContract("MarketStore");
-    const marketInfo = (await this.client.withFallback(() =>
-      marketStore.get(params.market),
-    )) as { maxLeverage: ethers.BigNumber; fee: ethers.BigNumber };
+    const marketInfo = await this.client.withFallback(async () => {
+      const ms = await this.client.getContract("MarketStore");
+      return ms.get(params.market) as Promise<{
+        maxLeverage: ethers.BigNumber;
+        fee: ethers.BigNumber;
+      }>;
+    });
     const maxLeverage = Number(marketInfo.maxLeverage);
 
-    const _margin = parseUnits(params.margin.toString(), assetDecimals);
+    const _margin = parseUnits(params.margin, assetDecimals);
     const _size = this.computeSize(_margin, params.leverage, maxLeverage);
 
     // Validate minimum size (from AssetStore)
@@ -181,7 +184,7 @@ export class PinguTrader {
           isLong: !params.isLong,
           margin: ethers.BigNumber.from(0),
           size: _size,
-          price: parseUnits(params.tpPrice.toString(), 18),
+          price: parseUnits(params.tpPrice, 18),
           orderType: 1, // limit
           isReduceOnly: true,
         }),
@@ -196,7 +199,7 @@ export class PinguTrader {
           isLong: !params.isLong,
           margin: ethers.BigNumber.from(0),
           size: _size,
-          price: parseUnits(params.slPrice.toString(), 18),
+          price: parseUnits(params.slPrice, 18),
           orderType: 2, // stop
           isReduceOnly: true,
         }),
@@ -212,18 +215,19 @@ export class PinguTrader {
     }
 
     try {
-      const contract = await this.client.getContract("Orders", true);
-      const gas = await contract.estimateGas.submitSimpleOrders(
-        orders,
-        [],
-        { value },
-      );
-      const tx = await contract.submitSimpleOrders(orders, [], {
-        value,
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Orders", true);
+        const gas = await contract.estimateGas.submitSimpleOrders(
+          orders,
+          [],
+          { value },
+        );
+        const tx = await contract.submitSimpleOrders(orders, [], {
+          value,
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(
         `Failed to submit market order: ${parseContractError(error)}`,
@@ -248,15 +252,18 @@ export class PinguTrader {
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
 
     // Fetch market maxLeverage to cap size and prevent revert
-    const marketStore = await this.client.getContract("MarketStore");
-    const marketInfo = (await this.client.withFallback(() =>
-      marketStore.get(params.market),
-    )) as { maxLeverage: ethers.BigNumber; fee: ethers.BigNumber };
+    const marketInfo = await this.client.withFallback(async () => {
+      const ms = await this.client.getContract("MarketStore");
+      return ms.get(params.market) as Promise<{
+        maxLeverage: ethers.BigNumber;
+        fee: ethers.BigNumber;
+      }>;
+    });
     const maxLeverage = Number(marketInfo.maxLeverage);
 
-    const _margin = parseUnits(params.margin.toString(), assetDecimals);
+    const _margin = parseUnits(params.margin, assetDecimals);
     const _size = this.computeSize(_margin, params.leverage, maxLeverage);
-    const _price = parseUnits(params.price.toString(), 18);
+    const _price = parseUnits(params.price, 18);
 
     // Validate minimum size (from AssetStore)
     const minSize = getAssetMinSize(asset, this.client.config.assets);
@@ -288,7 +295,7 @@ export class PinguTrader {
           isLong: !params.isLong,
           margin: ethers.BigNumber.from(0),
           size: _size,
-          price: parseUnits(params.tpPrice.toString(), 18),
+          price: parseUnits(params.tpPrice, 18),
           orderType: 1, // limit
           isReduceOnly: true,
         }),
@@ -303,7 +310,7 @@ export class PinguTrader {
           isLong: !params.isLong,
           margin: ethers.BigNumber.from(0),
           size: _size,
-          price: parseUnits(params.slPrice.toString(), 18),
+          price: parseUnits(params.slPrice, 18),
           orderType: 2, // stop
           isReduceOnly: true,
         }),
@@ -319,18 +326,19 @@ export class PinguTrader {
     }
 
     try {
-      const contract = await this.client.getContract("Orders", true);
-      const gas = await contract.estimateGas.submitSimpleOrders(
-        orders,
-        [],
-        { value },
-      );
-      const tx = await contract.submitSimpleOrders(orders, [], {
-        value,
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Orders", true);
+        const gas = await contract.estimateGas.submitSimpleOrders(
+          orders,
+          [],
+          { value },
+        );
+        const tx = await contract.submitSimpleOrders(orders, [], {
+          value,
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(
         `Failed to submit limit order: ${parseContractError(error)}`,
@@ -350,16 +358,21 @@ export class PinguTrader {
     let _size: ethers.BigNumber;
 
     if (params.size) {
-      _size = parseUnits(params.size.toString(), assetDecimals);
+      _size = parseUnits(params.size, assetDecimals);
     } else {
       // Full close: read user positions to get current size
       const positions = await this.getPositionsRaw();
+
+      // FIX: filter by asset address in addition to market + isLong
       const position = positions.find(
-        (p) => p.market === params.market && p.isLong === params.isLong,
+        (p) =>
+          p.market === params.market &&
+          p.isLong === params.isLong &&
+          p.asset.toLowerCase() === assetAddress.toLowerCase(),
       );
       if (!position) {
         throw new Error(
-          `No ${params.isLong ? "long" : "short"} position found for ${params.market}`,
+          `No ${params.isLong ? "long" : "short"} position found for ${params.market} [${asset}]`,
         );
       }
       _size = position.sizeRaw;
@@ -368,7 +381,7 @@ export class PinguTrader {
     const orderTuple = createOrderTuple({
       market: params.market,
       asset: assetAddress,
-      isLong: params.isLong,
+      isLong: !params.isLong,
       margin: ethers.BigNumber.from(0),
       size: _size,
       price: 0,
@@ -377,16 +390,17 @@ export class PinguTrader {
     });
 
     try {
-      const contract = await this.client.getContract("Orders", true);
-      const gas = await contract.estimateGas.submitSimpleOrders(
-        [orderTuple],
-        [],
-      );
-      const tx = await contract.submitSimpleOrders([orderTuple], [], {
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Orders", true);
+        const gas = await contract.estimateGas.submitSimpleOrders(
+          [orderTuple],
+          [],
+        );
+        const tx = await contract.submitSimpleOrders([orderTuple], [], {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(
         `Failed to close position: ${parseContractError(error)}`,
@@ -400,13 +414,14 @@ export class PinguTrader {
     this.requireSigner();
 
     try {
-      const contract = await this.client.getContract("Orders", true);
-      const gas = await contract.estimateGas.cancelOrder(orderId);
-      const tx = await contract.cancelOrder(orderId, {
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Orders", true);
+        const gas = await contract.estimateGas.cancelOrder(orderId);
+        const tx = await contract.cancelOrder(orderId, {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to cancel order: ${parseContractError(error)}`);
     }
@@ -418,13 +433,14 @@ export class PinguTrader {
     this.requireSigner();
 
     try {
-      const contract = await this.client.getContract("Orders", true);
-      const gas = await contract.estimateGas.cancelOrders(orderIds);
-      const tx = await contract.cancelOrders(orderIds, {
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Orders", true);
+        const gas = await contract.estimateGas.cancelOrders(orderIds);
+        const tx = await contract.cancelOrders(orderIds, {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to cancel orders: ${parseContractError(error)}`);
     }
@@ -432,14 +448,14 @@ export class PinguTrader {
 
   async addMargin(
     market: string,
-    amount: number,
+    amount: number | ethers.BigNumber,
     asset = "USDC",
   ): Promise<ethers.providers.TransactionReceipt> {
     this.requireSigner();
 
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const margin = parseUnits(amount.toString(), assetDecimals);
+    const margin = parseUnits(amount, assetDecimals);
 
     let value = ethers.BigNumber.from(0);
     if (isGasToken(asset, this.client.config.assets)) {
@@ -447,19 +463,20 @@ export class PinguTrader {
     }
 
     try {
-      const contract = await this.client.getContract("Positions", true);
-      const gas = await contract.estimateGas.addMargin(
-        assetAddress,
-        market,
-        margin,
-        { value },
-      );
-      const tx = await contract.addMargin(assetAddress, market, margin, {
-        value,
-        gasLimit: addGasBuffer(gas),
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Positions", true);
+        const gas = await contract.estimateGas.addMargin(
+          assetAddress,
+          market,
+          margin,
+          { value },
+        );
+        const tx = await contract.addMargin(assetAddress, market, margin, {
+          value,
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to add margin: ${parseContractError(error)}`);
     }
@@ -476,47 +493,50 @@ export class PinguTrader {
    * - Requires a Pyth price update (fetched automatically from Hermes).
    *
    * @param market - Market identifier (e.g. "ETH-USD")
-   * @param amount - Amount of margin to remove (human-readable, e.g. 50 for 50 USDC)
+   * @param amount - Amount of margin to remove (human-readable number, or raw BigNumber)
    * @param asset - Asset name (default "USDC")
    */
   async removeMargin(
     market: string,
-    amount: number,
+    amount: number | ethers.BigNumber,
     asset = "USDC",
   ): Promise<ethers.providers.TransactionReceipt> {
     this.requireSigner();
 
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
     const assetDecimals = getAssetDecimals(asset, this.client.config.assets);
-    const margin = parseUnits(amount.toString(), assetDecimals);
+    const margin = parseUnits(amount, assetDecimals);
 
     // Get market info for Pyth feed
-    const marketStore = await this.client.getContract("MarketStore");
-    const marketInfo = await marketStore.get(market);
+    const marketInfo = await this.client.withFallback(async () => {
+      const ms = await this.client.getContract("MarketStore");
+      return ms.get(market);
+    });
     const pythFeed = marketInfo.pythFeed;
 
     // Fetch price update from Pyth Hermes
     const priceUpdateData = await this.fetchPythPriceUpdate(pythFeed);
 
     try {
-      const contract = await this.client.getContract("Positions", true);
-      const gas = await contract.estimateGas.removeMargin(
-        assetAddress,
-        market,
-        margin,
-        priceUpdateData,
-      );
-      const tx = await contract.removeMargin(
-        assetAddress,
-        market,
-        margin,
-        priceUpdateData,
-        {
-          gasLimit: addGasBuffer(gas),
-        },
-      );
-
-      return tx.wait();
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Positions", true);
+        const gas = await contract.estimateGas.removeMargin(
+          assetAddress,
+          market,
+          margin,
+          priceUpdateData,
+        );
+        const tx = await contract.removeMargin(
+          assetAddress,
+          market,
+          margin,
+          priceUpdateData,
+          {
+            gasLimit: addGasBuffer(gas),
+          },
+        );
+        return tx.wait();
+      });
     } catch (error) {
       throw new Error(`Failed to remove margin: ${parseContractError(error)}`);
     }
@@ -547,30 +567,33 @@ export class PinguTrader {
     const assetAddress = getAssetAddress(asset, this.client.config.assets);
 
     // Get market info for Pyth feed
-    const marketStore = await this.client.getContract("MarketStore");
-    const marketInfo = await marketStore.get(market);
+    const marketInfo = await this.client.withFallback(async () => {
+      const ms = await this.client.getContract("MarketStore");
+      return ms.get(market);
+    });
     const pythFeed = marketInfo.pythFeed;
 
     // Fetch price update from Pyth Hermes
     const priceUpdateData = await this.fetchPythPriceUpdate(pythFeed);
 
     try {
-      const contract = await this.client.getContract("Positions", true);
-      const gas = await contract.estimateGas.closePositionWithoutProfit(
-        assetAddress,
-        market,
-        priceUpdateData,
-      );
-      const tx = await contract.closePositionWithoutProfit(
-        assetAddress,
-        market,
-        priceUpdateData,
-        {
-          gasLimit: addGasBuffer(gas),
-        },
-      );
-
-      return tx.wait();
+      return await this.client.withFallback(async () => {
+        const contract = await this.client.getContract("Positions", true);
+        const gas = await contract.estimateGas.closePositionWithoutProfit(
+          assetAddress,
+          market,
+          priceUpdateData,
+        );
+        const tx = await contract.closePositionWithoutProfit(
+          assetAddress,
+          market,
+          priceUpdateData,
+          {
+            gasLimit: addGasBuffer(gas),
+          },
+        );
+        return tx.wait();
+      });
     } catch (error) {
       throw new Error(
         `Failed to close position without profit: ${parseContractError(error)}`,
@@ -612,12 +635,12 @@ export class PinguTrader {
     }>
   > {
     const userAddress = this.client.getAddress();
-    const positionStore = await this.client.getContract("PositionStore");
 
     try {
-      const rawPositions = (await this.client.withFallback(() =>
-        positionStore.getUserPositions(userAddress),
-      )) as RawPosition[];
+      const rawPositions = await this.client.withFallback(async () => {
+        const positionStore = await this.client.getContract("PositionStore");
+        return positionStore.getUserPositions(userAddress) as Promise<RawPosition[]>;
+      });
 
       return rawPositions
         .filter((p) => !p.size.isZero())
@@ -639,18 +662,17 @@ export class PinguTrader {
 
   async getPositions(address?: string): Promise<Position[]> {
     const userAddress = address || this.client.getAddress();
-    const positionStore = await this.client.getContract("PositionStore");
     const assets = this.client.config.assets;
 
     try {
-      const rawPositions = (await this.client.withFallback(() =>
-        positionStore.getUserPositions(userAddress),
-      )) as RawPosition[];
+      const rawPositions = await this.client.withFallback(async () => {
+        const positionStore = await this.client.getContract("PositionStore");
+        return positionStore.getUserPositions(userAddress) as Promise<RawPosition[]>;
+      });
 
       return rawPositions
         .filter((p) => !p.size.isZero())
         .map((p) => {
-          const decimals = getAssetDecimalsByAddress(p.asset, assets);
           const assetName = getAssetNameByAddress(p.asset, assets) || p.asset;
 
           return {
@@ -658,11 +680,11 @@ export class PinguTrader {
             asset: assetName,
             market: p.market,
             isLong: p.isLong,
-            size: Number(formatUnits(p.size, decimals)),
-            margin: Number(formatUnits(p.margin, decimals)),
+            size: p.size,
+            margin: p.margin,
             fundingTracker: p.fundingTracker,
             price: Number(formatUnits(p.price, 18)),
-            timestamp: Number(p.timestamp),
+            timestamp: p.timestamp,
             leverage: calculateLeverage(p.size, p.margin),
           };
         });
@@ -673,16 +695,15 @@ export class PinguTrader {
 
   async getOrders(address?: string): Promise<Order[]> {
     const userAddress = address || this.client.getAddress();
-    const orderStore = await this.client.getContract("OrderStore");
     const assets = this.client.config.assets;
 
     try {
-      const rawOrders = (await this.client.withFallback(() =>
-        orderStore.getUserOrders(userAddress),
-      )) as RawOrder[];
+      const rawOrders = await this.client.withFallback(async () => {
+        const orderStore = await this.client.getContract("OrderStore");
+        return orderStore.getUserOrders(userAddress) as Promise<RawOrder[]>;
+      });
 
       return rawOrders.map((o) => {
-        const decimals = getAssetDecimalsByAddress(o.asset, assets);
         const assetName = getAssetNameByAddress(o.asset, assets) || o.asset;
 
         return {
@@ -690,15 +711,15 @@ export class PinguTrader {
           user: o.user,
           asset: assetName,
           market: o.market,
-          margin: Number(formatUnits(o.margin, decimals)),
-          size: Number(formatUnits(o.size, decimals)),
+          margin: o.margin,
+          size: o.size,
           price: Number(formatUnits(o.price, 18)),
-          fee: Number(formatUnits(o.fee, decimals)),
+          fee: o.fee,
           isLong: o.isLong,
           orderType: o.orderType,
           isReduceOnly: o.isReduceOnly,
-          timestamp: Number(o.timestamp),
-          expiry: Number(o.expiry),
+          timestamp: o.timestamp,
+          expiry: o.expiry,
           cancelOrderId: Number(o.cancelOrderId),
           leverage: calculateLeverage(o.size, o.margin),
         };
@@ -721,10 +742,10 @@ export class PinguTrader {
         return Number(formatUnits(balance, assetDecimals));
       }
 
-      const erc20 = this.client.getErc20Contract(assetAddress);
-      const balance = (await this.client.withFallback(() =>
-        erc20.balanceOf(userAddress),
-      )) as ethers.BigNumber;
+      const balance = await this.client.withFallback(async () => {
+        const erc20 = this.client.getErc20Contract(assetAddress);
+        return erc20.balanceOf(userAddress) as Promise<ethers.BigNumber>;
+      });
       return Number(formatUnits(balance, assetDecimals));
     } catch (error) {
       throw new Error(`Failed to get balance: ${parseContractError(error)}`);
@@ -743,10 +764,10 @@ export class PinguTrader {
     try {
       const fundStoreAddress =
         await this.client.getContractAddress("FundStore");
-      const erc20 = this.client.getErc20Contract(assetAddress);
-      const allowance = (await this.client.withFallback(() =>
-        erc20.allowance(userAddress, fundStoreAddress),
-      )) as ethers.BigNumber;
+      const allowance = await this.client.withFallback(async () => {
+        const erc20 = this.client.getErc20Contract(assetAddress);
+        return erc20.allowance(userAddress, fundStoreAddress) as Promise<ethers.BigNumber>;
+      });
       return Number(formatUnits(allowance, assetDecimals));
     } catch (error) {
       throw new Error(`Failed to get allowance: ${parseContractError(error)}`);
@@ -771,19 +792,21 @@ export class PinguTrader {
     }
 
     try {
-      const fundStoreAddress =
-        await this.client.getContractAddress("FundStore");
-      const erc20 = this.client.getErc20Contract(assetAddress, true);
+      return await this.client.withFallback(async () => {
+        const fundStoreAddress =
+          await this.client.getContractAddress("FundStore");
+        const erc20 = this.client.getErc20Contract(assetAddress, true);
 
-      const approveAmount = amount || ethers.constants.MaxUint256;
-      const gas = await erc20.estimateGas.approve(
-        fundStoreAddress,
-        approveAmount,
-      );
-      const tx = await erc20.approve(fundStoreAddress, approveAmount, {
-        gasLimit: addGasBuffer(gas),
+        const approveAmount = amount || ethers.constants.MaxUint256;
+        const gas = await erc20.estimateGas.approve(
+          fundStoreAddress,
+          approveAmount,
+        );
+        const tx = await erc20.approve(fundStoreAddress, approveAmount, {
+          gasLimit: addGasBuffer(gas),
+        });
+        return tx.wait();
       });
-      return tx.wait();
     } catch (error) {
       throw new Error(`Failed to approve asset: ${parseContractError(error)}`);
     }

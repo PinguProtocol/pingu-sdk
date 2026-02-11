@@ -50,4 +50,5 @@ export {
   isGasToken,
   getAssetMinSize,
   parseContractError,
+  isKnownEvmRevert,
 } from "./utils";

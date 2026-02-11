@@ -1,5 +1,7 @@
+import { ethers } from "ethers";
 import { ADDRESS_ZERO, buildSubgraphUrl, MONAD_SUBGRAPH_ID } from "./config";
 import type { TradeHistory, UserStats } from "./types";
+import { calculateLeverage } from "./utils";
 
 export class PinguGraph {
   private endpoint: string;
@@ -110,13 +112,26 @@ export class PinguGraph {
           t.type === "PositionDecreased" || t.type === "PositionLiquidated",
       );
 
-      const totalPnl = closeTrades.reduce((sum, t) => sum + (t.pnl || 0), 0);
-      const winCount = closeTrades.filter((t) => (t.pnl || 0) > 0).length;
-      const lossCount = closeTrades.filter((t) => (t.pnl || 0) <= 0).length;
+      const totalPnl = closeTrades.reduce(
+        (sum, t) => sum.add(t.pnl || ethers.BigNumber.from(0)),
+        ethers.BigNumber.from(0),
+      );
+      const winCount = closeTrades.filter(
+        (t) => t.pnl && t.pnl.gt(0),
+      ).length;
+      const lossCount = closeTrades.filter(
+        (t) => !t.pnl || t.pnl.lte(0),
+      ).length;
+
+      // Sum volumes (raw BigNumber — note: mixed decimals across assets)
+      const totalVolume = history.reduce(
+        (sum, t) => sum.add(t.size),
+        ethers.BigNumber.from(0),
+      );
 
       return {
         totalTrades: history.length,
-        totalVolume: history.reduce((sum, t) => sum + t.size, 0),
+        totalVolume,
         totalPnl,
         winCount,
         lossCount,
@@ -128,10 +143,13 @@ export class PinguGraph {
     }
   }
 
-  async getUserVolume(address: string): Promise<number> {
+  async getUserVolume(address: string): Promise<ethers.BigNumber> {
     try {
       const history = await this.getUserHistory(address, 10000);
-      return history.reduce((sum, t) => sum + t.size, 0);
+      return history.reduce(
+        (sum, t) => sum.add(t.size),
+        ethers.BigNumber.from(0),
+      );
     } catch (error) {
       throw new Error(`Failed to get user volume: ${(error as Error).message}`);
     }
@@ -184,21 +202,20 @@ export class PinguGraph {
   }
 
   private formatHistoryItem(item: any): TradeHistory {
-    const decimals = item.asset === ADDRESS_ZERO ? 18 : 6;
     const price = Number(item.price) / 1e18;
-    const size = Number(item.size) / 10 ** decimals;
-    const margin = Number(item.margin) / 10 ** decimals;
-    const fee = Number(item.fee) / 10 ** decimals;
-    let pnl: number | undefined;
+    const size = ethers.BigNumber.from(item.size);
+    const margin = ethers.BigNumber.from(item.margin);
+    const fee = ethers.BigNumber.from(item.fee);
+    let pnl: ethers.BigNumber | undefined;
 
     if (item.type === "PositionLiquidated") {
-      pnl = -margin;
+      pnl = margin.mul(-1);
     } else if (item.pnl && item.pnl !== "0") {
-      pnl = Number(item.pnl) / 10 ** decimals;
+      pnl = ethers.BigNumber.from(item.pnl);
     }
 
-    // Calculate leverage from size and margin, avoid division by zero
-    const leverage = margin > 0 ? Math.round((size / margin) * 1000) / 1000 : 0;
+    // Calculate leverage from size and margin BigNumbers
+    const leverage = !margin.isZero() ? calculateLeverage(size, margin) : 0;
 
     return {
       id: item.id,
@@ -214,7 +231,7 @@ export class PinguGraph {
       pnl,
       orderId: item.orderId,
       blockNumber: Number(item.blockNumber),
-      timestamp: Number(item.blockTimestamp),
+      timestamp: ethers.BigNumber.from(item.blockTimestamp),
       transactionHash: item.transactionHash,
       leverage,
     };

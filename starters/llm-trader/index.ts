@@ -1,16 +1,20 @@
 import "dotenv/config";
-import { PinguClient, PinguTrader, PinguReader } from "@pingu-exchange/sdk";
+import { PinguClient, PinguTrader, PinguReader, formatUnits, getAssetDecimals, MONAD_CONFIG } from "@pingu-exchange/sdk";
 
 // Configuration
 const MARKETS = ["ETH-USD", "BTC-USD", "SOL-USD"];
 const MAX_MARGIN = Number(process.env.MAX_MARGIN || "100");
 const MAX_LEVERAGE = Number(process.env.MAX_LEVERAGE || "5");
+const ASSET = process.env.ASSET || "USDC";
 
 const client = new PinguClient({
   privateKey: process.env.PRIVATE_KEY,
+  ...(process.env.RPC_URL ? { rpcUrl: process.env.RPC_URL } : {}),
 });
 const trader = new PinguTrader(client);
 const reader = new PinguReader(client);
+
+const decimals = getAssetDecimals(ASSET, MONAD_CONFIG.assets);
 
 // --- LLM Integration ---
 
@@ -59,15 +63,22 @@ async function gatherMarketData(): Promise<string> {
   for (const market of MARKETS) {
     try {
       const info = await reader.getMarketInfo(market);
-      const oi = await reader.getOpenInterest(market);
-      const funding = await reader.getFundingRate(market);
+      const oi = await reader.getOpenInterest(market, ASSET);
+      const funding = await reader.getFundingRate(market, ASSET);
+
+      // Format OI BigNumbers to human-readable
+      const oiTotal = formatUnits(oi.total, decimals);
+      const oiLong = formatUnits(oi.long, decimals);
+      const oiShort = formatUnits(oi.short, decimals);
+      const longNum = Number(oiLong);
+      const shortNum = Number(oiShort);
 
       lines.push(`\n${market}:`);
       lines.push(`  Max Leverage: ${info.maxLeverage}x`);
       lines.push(`  Fee: ${(info.fee * 100).toFixed(3)}%`);
-      lines.push(`  Open Interest: $${oi.total.toLocaleString()} (L: $${oi.long.toLocaleString()} / S: $${oi.short.toLocaleString()})`);
+      lines.push(`  Open Interest: ${oiTotal} (L: ${oiLong} / S: ${oiShort})`);
       lines.push(`  Funding Rate: ${funding.toFixed(6)}%`);
-      lines.push(`  Long/Short Ratio: ${oi.long > 0 && oi.short > 0 ? (oi.long / oi.short).toFixed(2) : "N/A"}`);
+      lines.push(`  Long/Short Ratio: ${longNum > 0 && shortNum > 0 ? (longNum / shortNum).toFixed(2) : "N/A"}`);
     } catch {
       lines.push(`\n${market}: data unavailable`);
     }
@@ -78,15 +89,16 @@ async function gatherMarketData(): Promise<string> {
   if (positions.length > 0) {
     lines.push("\nCURRENT POSITIONS:");
     for (const p of positions) {
-      lines.push(`  ${p.market} ${p.isLong ? "LONG" : "SHORT"} ${p.leverage.toFixed(1)}x | margin: $${p.margin.toFixed(2)} | entry: $${p.price.toFixed(2)}`);
+      const d = getAssetDecimals(p.asset, MONAD_CONFIG.assets);
+      lines.push(`  ${p.market} ${p.isLong ? "LONG" : "SHORT"} ${p.leverage.toFixed(1)}x | margin: ${formatUnits(p.margin, d)} | entry: $${p.price.toFixed(2)}`);
     }
   } else {
     lines.push("\nNo open positions.");
   }
 
   // Balance
-  const balance = await trader.getBalance("USDC");
-  lines.push(`\nUSDC Balance: $${balance.toFixed(2)}`);
+  const balance = await trader.getBalance(ASSET);
+  lines.push(`\n${ASSET} Balance: ${balance.toFixed(2)}`);
 
   return lines.join("\n");
 }
@@ -112,6 +124,7 @@ async function executeDecision(decision: LLMDecision) {
         isLong,
         margin,
         leverage,
+        asset: ASSET,
       });
       console.log(`Done. tx: ${receipt.transactionHash}`);
       break;
@@ -119,12 +132,13 @@ async function executeDecision(decision: LLMDecision) {
 
     case "close": {
       const positions = await trader.getPositions();
-      const position = positions.find((p) => p.market === decision.market);
+      const position = positions.find((p) => p.market === decision.market && p.asset === ASSET);
       if (position) {
         console.log(`Closing ${decision.market} position...`);
         await trader.closePosition({
           market: decision.market,
           isLong: position.isLong,
+          asset: ASSET,
         });
         console.log("Closed.");
       } else {
@@ -143,17 +157,18 @@ async function executeDecision(decision: LLMDecision) {
 
 async function run() {
   console.log("Pingu LLM Trading Agent");
-  console.log(`Markets: ${MARKETS.join(", ")}`);
+  console.log(`Markets: ${MARKETS.join(", ")} | Asset: ${ASSET}`);
   console.log(`Max Margin: $${MAX_MARGIN} | Max Leverage: ${MAX_LEVERAGE}x`);
   console.log(`Address: ${client.getAddress()}`);
   console.log(`Model: ${process.env.LLM_MODEL || "gpt-4o-mini"}`);
+  console.log(`RPC: ${client.getCurrentRpcUrl()}`);
   console.log("");
 
-  // Approve USDC if needed
-  const allowance = await trader.getAllowance("USDC");
+  // Approve if needed (skip for gas tokens)
+  const allowance = await trader.getAllowance(ASSET);
   if (allowance < MAX_MARGIN * 10) {
-    console.log("Approving USDC...");
-    await trader.approveUSDC();
+    console.log(`Approving ${ASSET}...`);
+    await trader.approveAsset(ASSET);
     console.log("Approved.\n");
   }
 

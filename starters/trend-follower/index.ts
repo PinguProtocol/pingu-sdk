@@ -1,18 +1,22 @@
 import "dotenv/config";
-import { PinguClient, PinguTrader, PinguReader } from "@pingu-exchange/sdk";
+import { PinguClient, PinguTrader, PinguReader, formatUnits, getAssetDecimals, MONAD_CONFIG } from "@pingu-exchange/sdk";
 
 // Configuration
 const MARKET = process.env.MARKET || "ETH-USD";
 const MARGIN = Number(process.env.MARGIN || "50"); // USDC per trade
 const LEVERAGE = Number(process.env.LEVERAGE || "5");
+const ASSET = process.env.ASSET || "USDC";
 const CHECK_INTERVAL_MS = 30_000; // 30 seconds
 const OI_MOMENTUM_THRESHOLD = 0.1; // 10% long/short imbalance triggers entry
 
 const client = new PinguClient({
   privateKey: process.env.PRIVATE_KEY,
+  ...(process.env.RPC_URL ? { rpcUrl: process.env.RPC_URL } : {}),
 });
 const trader = new PinguTrader(client);
 const reader = new PinguReader(client);
+
+const decimals = getAssetDecimals(ASSET, MONAD_CONFIG.assets);
 
 interface Signal {
   direction: "long" | "short" | "neutral";
@@ -21,18 +25,20 @@ interface Signal {
 }
 
 async function analyzeMarket(market: string): Promise<Signal> {
-  const oi = await reader.getOpenInterest(market);
-  const funding = await reader.getFundingRate(market);
+  const oi = await reader.getOpenInterest(market, ASSET);
+  const funding = await reader.getFundingRate(market, ASSET);
 
-  // Simple momentum signal based on OI imbalance
-  // If longs dominate heavily, trend is up. If shorts dominate, trend is down.
-  const total = oi.long + oi.short;
+  // OI values are BigNumbers — convert to numbers for ratio calculation
+  const longNum = Number(formatUnits(oi.long, decimals));
+  const shortNum = Number(formatUnits(oi.short, decimals));
+  const total = longNum + shortNum;
+
   if (total === 0) {
     return { direction: "neutral", confidence: 0, reason: "No open interest" };
   }
 
-  const longRatio = oi.long / total;
-  const shortRatio = oi.short / total;
+  const longRatio = longNum / total;
+  const shortRatio = shortNum / total;
   const imbalance = longRatio - shortRatio;
 
   // Funding rate confirms or contradicts the OI signal
@@ -66,7 +72,7 @@ async function analyzeMarket(market: string): Promise<Signal> {
 
 async function getOpenPosition(market: string) {
   const positions = await trader.getPositions();
-  return positions.find((p) => p.market === market);
+  return positions.find((p) => p.market === market && p.asset === ASSET);
 }
 
 async function executeSignal(market: string, signal: Signal) {
@@ -81,6 +87,7 @@ async function executeSignal(market: string, signal: Signal) {
       await trader.closePosition({
         market,
         isLong: position.isLong,
+        asset: ASSET,
       });
       console.log("Position closed.");
 
@@ -103,6 +110,7 @@ async function executeSignal(market: string, signal: Signal) {
       isLong,
       margin: MARGIN,
       leverage: LEVERAGE,
+      asset: ASSET,
     });
     console.log("Order submitted.");
   }
@@ -110,16 +118,17 @@ async function executeSignal(market: string, signal: Signal) {
 
 async function run() {
   console.log("Pingu Trend Follower");
-  console.log(`Market: ${MARKET}`);
+  console.log(`Market: ${MARKET} | Asset: ${ASSET}`);
   console.log(`Margin: $${MARGIN} | Leverage: ${LEVERAGE}x`);
   console.log(`Address: ${client.getAddress()}`);
+  console.log(`RPC: ${client.getCurrentRpcUrl()}`);
   console.log("");
 
-  // Check USDC allowance
-  const allowance = await trader.getAllowance("USDC");
+  // Check allowance (skip for gas tokens)
+  const allowance = await trader.getAllowance(ASSET);
   if (allowance < MARGIN * 10) {
-    console.log("Approving USDC...");
-    await trader.approveUSDC();
+    console.log(`Approving ${ASSET}...`);
+    await trader.approveAsset(ASSET);
     console.log("Approved.\n");
   }
 
