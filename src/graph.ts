@@ -202,10 +202,10 @@ export class PinguGraph {
   }
 
   private formatHistoryItem(item: any): TradeHistory {
-    const price = Number(item.price) / 1e18;
-    const size = ethers.BigNumber.from(item.size);
-    const margin = ethers.BigNumber.from(item.margin);
-    const fee = ethers.BigNumber.from(item.fee);
+    const price = item.price ? Number(item.price) / 1e18 : 0;
+    const size = ethers.BigNumber.from(item.size || "0");
+    const margin = ethers.BigNumber.from(item.margin || "0");
+    const fee = ethers.BigNumber.from(item.fee || "0");
     let pnl: ethers.BigNumber | undefined;
 
     if (item.type === "PositionLiquidated") {
@@ -229,7 +229,7 @@ export class PinguGraph {
       fee,
       isLong: item.isLong,
       pnl,
-      orderId: item.orderId,
+      orderId: item.orderId || "0",
       blockNumber: Number(item.blockNumber),
       timestamp: ethers.BigNumber.from(item.blockTimestamp),
       transactionHash: item.transactionHash,

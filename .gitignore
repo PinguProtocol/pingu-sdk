@@ -5,3 +5,5 @@ dist/
 test-sdk.ts
 logs/
 *.sol
+decode_confirm.ts
+DS_STORE
