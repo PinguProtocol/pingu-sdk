@@ -7,7 +7,7 @@ Trade 70+ markets (crypto, FX, metals, commodities, equities) with a few lines o
 ## Installation
 
 ```bash
-npm install github:PinguProtocol/pingu-agent-sdk
+npm install github:PinguProtocol/pingu-sdk
 ```
 
 **Requirements:**
